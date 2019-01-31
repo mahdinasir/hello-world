@@ -1,8 +1,1 @@
-# hello-world
-:|
-:)
-:(
-;D
-:D
-:P
-:O
+# fun with ML
