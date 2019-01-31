@@ -1,0 +1,403 @@
+---
+title: "Features"
+author: "Mahdi"
+date: "July 17, 2018"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+```{r}
+library(tscompdata)
+library(TStools)
+library(tsfeatures)
+library(GGally)
+library(ggplot2)
+library(imputeTS)
+library(thief)
+library(forecTheta)
+library(tidyverse)
+library(readxl)
+library(caret)
+library(reshape2)
+library(e1071)
+library(randomForest)
+library(rattle)
+
+```
+
+# Same data wrangling
+
+```{r}
+new_nn5 <- lapply(nn5, na.mean, option = "mean")
+feats <- tsfeatures(new_nn5)                    # 24 features for each time series
+
+df <- data.frame(matrix(ncol = 24, nrow = 111))
+colnames(df) <- c(names(feats)) 
+for(i in seq_len(24)){
+  df[,i] <- feats[[i]]
+}
+
+
+
+result_56 <- read_xlsx("~/Result_56.xlsx")
+result <- result_56[,c("mapa_smape", "thief_smape", "ZZZ_smape", "TBATS_smape",
+                       "STheta_smape", "DOTM_smape")]
+
+df[, "best"] <- apply(result, 1, which.min )   # finding best model
+df[,"best"] <- factor(df[,"best"], levels = c(1,2,3,4,5,6), ordered = T)
+
+
+
+result_mase <- result_56[,c("mapa_mase", "thief_mase", "ZZZ_mase", "TBATS_mase",
+                        "STheta_mase","DOTM_mase")]
+
+df_mase <-data.frame(matrix(ncol = 24, nrow = 111))
+colnames(df_mase) <- c(names(feats)) 
+for(i in seq_len(24)){
+  df_mase[,i] <- feats[[i]]
+}
+
+
+
+df_mase[, "best"] <- apply(result_mase, 1, which.min )   # finding best model
+df_mase[,"best"] <- factor(df_mase[,"best"], levels = c(1,2,3,4,5,6), ordered = T)
+
+
+
+
+
+```
+
+
+
+# feature selection 
+```{r}
+df <- df[, c("curvature", "diff1_acf10", "e_acf1","e_acf10","entropy", "seasonal_strength1","linearity",
+             "seasonal_strength2","trend", "x_acf1", "x_acf10","seas_acf1", "best")]
+
+#MASE
+df_mase <- df_mase[, c("curvature", "diff1_acf10", "e_acf1","e_acf10","entropy", "seasonal_strength1",
+                       "linearity", "seasonal_strength2","trend", "x_acf1", "x_acf10","seas_acf1", "best")]
+```
+
+
+#Classification
+
+#XGBOOST
+
+``` {r}
+
+
+set.seed(2018)
+train_index <- read.csv("~/indexes.csv")[,2]
+
+df.train <- df[train_index,]
+df.test <- df[-(train_index),]
+
+
+train_cont <- trainControl(method = "repeatedcv", number = 10, repeats = 5, search = "random",
+                           savePredictions = TRUE)
+
+class_train <- train(best~. , data = df.train, method = "xgbTree", trControl = train_cont)
+preds <- predict(class_train, df.test)
+
+CM <- confusionMatrix(preds, df.test[,"best"]) 
+CM
+
+# from previous runs, 50% accuracy with no hyperparameter tuning and 10cv for 3 times
+
+tbb <- data.frame(CM[[2]])
+ggplot(tbb) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for XGBOOST of sMAPE") + theme_bw()
+
+# now lets calculate the meta learning forecast\\
+meta_result_56_smape <- result_56[-(train_index),] %>% select(c("mapa_smape", "thief_smape", "ZZZ_smape",
+      "TBATS_smape","STheta_smape","DOTM_smape"))
+
+
+meta_result_56_smape[,"xgboost_smape"] <- NA_real_
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_smape[i,"xgboost_smape"] <- meta_result_56_smape[i,as.numeric(preds)[i]]
+}
+
+#lets create the same results for mase too.
+
+
+df_mase.train <- df_mase[train_index,]
+df_mase.test <- df_mase[-(train_index),]
+
+
+train_cont_mase <- trainControl(method = "repeatedcv", number = 10, repeats = 5, search = "random",
+                                 savePredictions = TRUE)
+
+class_train_mase <- train(best~. , data = df_mase.train, method = "xgbTree", trControl = train_cont_mase)
+preds_mase <- predict(class_train_mase, df_mase.test)
+
+CM_mase <- confusionMatrix(preds_mase, df_mase.test[,"best"]) 
+CM_mase
+
+# from previous runs, 50% accuracy with no hyperparameter tuning and 10cv for 3 times
+
+tbb_mase <- data.frame(CM_mase[[2]])
+ggplot(tbb_mase) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for XGBOOST of MASE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+meta_result_56_mase <- result_56[-(train_index),] %>% select(c("mapa_mase", "thief_mase", "ZZZ_mase",
+      "TBATS_mase","STheta_mase", "DOTM_mase"))
+
+meta_result_56_mase[,"xgboost_mase"] <- NA_real_
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_mase[i,"xgboost_mase"] <- meta_result_56_mase[i,as.numeric(preds_mase)[i]]
+}
+
+
+
+
+
+```
+
+
+#Bagging
+```{r}
+class_train <- train(best~. , data = df.train, method = "treebag", trControl = train_cont)
+preds <- predict(class_train, df.test)
+
+CM <- confusionMatrix(preds, df.test[,"best"]) 
+CM
+
+
+tbb <- data.frame(CM[[2]])
+ggplot(tbb) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for Treebag of sMAPE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_smape[i,"treebag_smape"] <- meta_result_56_smape[i,as.numeric(preds)[i]]
+}
+
+
+#lets create the same results for mase too.
+
+
+df_mase <-data.frame(matrix(ncol = 24, nrow = 111))
+colnames(df_mase) <- c(names(feats)) 
+for(i in seq_len(24)){
+  df_mase[,i] <- feats[[i]]
+}
+
+class_train_mase <- train(best~. , data = df_mase.train, method = "treebag", trControl = train_cont_mase)
+preds_mase <- predict(class_train_mase, df_mase.test)
+
+CM_mase <- confusionMatrix(preds_mase, df_mase.test[,"best"]) 
+CM_mase
+
+
+
+tbb_mase <- data.frame(CM_mase[[2]])
+ggplot(tbb_mase) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for Treebag of MASE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_mase[i,"treebag_mase"] <- meta_result_56_mase[i,as.numeric(preds_mase)[i]]
+}
+
+```
+
+
+# Random Forest
+
+```{r}
+class_train <- train(best~. , data = df.train, method = "rf", trControl = train_cont)
+preds <- predict(class_train, df.test)
+virf<-class_train$finalModel["importance"]
+virf<-virf%>%as.data.frame()%>%rownames_to_column()%>%arrange(desc(MeanDecreaseGini))
+CM <- confusionMatrix(preds, df.test[,"best"]) 
+CM
+
+tbb <- data.frame(CM[[2]])
+ggplot(tbb) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for Randomforest of sMAPE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_smape[i,"Randomforest_smape"] <- meta_result_56_smape[i,as.numeric(preds)[i]]
+}
+
+#lets create the same results for mase too.
+
+
+
+class_train_mase <- train(best~. , data = df_mase.train, method = "rf", trControl = train_cont_mase)
+preds_mase <- predict(class_train_mase, df_mase.test)
+virf_mase<-class_train_mase$finalModel["importance"]
+virf_mase <- virf_mase %>% as.data.frame() %>% rownames_to_column() %>% arrange(desc(MeanDecreaseGini))
+CM_mase <- confusionMatrix(preds_mase, df_mase.test[,"best"]) 
+CM_mase
+
+
+
+tbb_mase <- data.frame(CM_mase[[2]])
+ggplot(tbb_mase) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for Randomforest of MASE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_mase[i,"Randomforest_mase"] <- meta_result_56_mase[i,as.numeric(preds_mase)[i]]
+}
+
+
+
+```
+
+# Decision Tree
+```{r fig.height = 10, fig.width = 12, fig.align = "center"}
+class_train <- train(best~. , data = df.train, method = "rpart", trControl = train_cont)
+preds <- predict(class_train, df.test)
+vidt <- class_train$finalModel["variable.importance"]
+CM <- confusionMatrix(preds, df.test[,"best"]) 
+CM
+
+rpart.plot::rpart.plot(class_train$finalModel)
+tbb <- data.frame(CM[[2]])
+ggplot(tbb) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for Decision_tree of sMAPE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_smape[i,"DecisionTree_smape"] <- meta_result_56_smape[i,as.numeric(preds)[i]]
+}
+
+#lets create the same results for mase too.
+
+class_train_mase <- train(best~. , data = df_mase.train, method = "rpart", trControl = train_cont_mase)
+preds_mase <- predict(class_train_mase, df_mase.test)
+vidt_mase <- class_train_mase$finalModel["varaiable.importance"]
+nvidt_mase_6<-vidt_mase%>%as.data.frame()%>%rownames_to_column()%>%arrange(desc(variable.importance))
+CM_mase <- confusionMatrix(preds_mase, df_mase.test[,"best"]) 
+CM_mase
+rpart.plot::rpart.plot(class_train_mase$finalModel)
+
+
+#fancyRpartPlot(class_train_mase$finalModel,main="Decision Tree for Mase")
+
+tbb_mase <- data.frame(CM_mase[[2]])
+ggplot(tbb_mase) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for DecisionTree of MASE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_mase[i,"DecisionTree_mase"] <- meta_result_56_mase[i,as.numeric(preds_mase)[i]]
+}
+
+```
+
+
+# Neural Net
+```{r fig.height = 10, fig.width = 12, fig.align = "center"}
+nnet_grid = expand.grid(layer1 =6,
+                        layer2 =4, layer3 =2,
+                        learning.rate = c(0.1), dropout = 0, 
+            activation = c("relu"), momentum = 0)
+nnet_grid2 = expand.grid(layer1 =13,
+                        layer2 =0, layer3 =0,
+                        learning.rate = c(0.14), dropout = 0.53, 
+            activation = c("sigmoid"), momentum = 0.34)
+
+
+
+class_train <- train(best~. , data = df.train, method = "mxnet", trControl = train_cont )
+
+preds <- predict(class_train, df.test)
+
+CM <- confusionMatrix(preds, df.test[,"best"]) 
+CM
+
+# now lets calculate the meta learning forecast
+
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_smape[i,"nnet_smape"] <- meta_result_56_smape[i,as.numeric(preds)[i]]
+}
+
+#lets create the same results for mase too.
+
+class_train_mase <- train(best~. , data = df_mase.train, method = "mxnet", 
+                          trControl = train_cont_mase)
+preds_mase <- predict(class_train_mase, df_mase.test)
+
+
+CM_mase <- confusionMatrix(preds_mase, df_mase.test[,"best"]) 
+CM_mase
+
+
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_mase[i,"nnet_mase"] <- meta_result_56_mase[i,as.numeric(preds_mase)[i]]
+}
+```
+
+
+#Support Vector Machine
+```{r}
+
+class_train <- train(best~. , data = df.train, method = "svmLinear", trControl = train_cont,scale=F)
+preds <- predict(class_train, df.test)
+
+CM <- confusionMatrix(preds, df.test[,"best"]) 
+CM
+
+tbb <- data.frame(CM[[2]])
+ggplot(tbb) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for Randomforest of sMAPE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_smape[i,"SVM_smape"] <- meta_result_56_smape[i,as.numeric(preds)[i]]
+}
+# lets calculate mean
+final_smape <- as.data.frame(apply(meta_result_56_smape, 2, mean)) # Final results
+colnames(final_smape) <- c("mean_sMAPE")
+
+##########MASE
+class_train_mase <- train(best~. , data = df_mase.train, method = "svmLinear", trControl = train_cont_mase,
+                          scale=F)
+preds_mase <- predict(class_train_mase, df_mase.test)
+
+CM_mase <- confusionMatrix(preds_mase, df_mase.test[,"best"]) 
+CM_mase
+
+
+
+tbb_mase <- data.frame(CM_mase[[2]])
+ggplot(tbb_mase) + geom_tile(aes(Prediction, Reference, fill = Freq)) +
+  ggtitle("Confusion Matrix for SVM of MASE") + theme_bw()
+
+# now lets calculate the meta learning forecast
+
+
+for(i in seq_len(111-length(train_index))){
+  meta_result_56_mase[i,"SVM_mase"] <- meta_result_56_mase[i,as.numeric(preds_mase)[i]]
+}
+# lets calculate mean
+final_mase <- as.data.frame(apply(meta_result_56_mase, 2, mean)) # Final results
+colnames(final_mase) <- c("mean_mase")
+
+write.csv(final_mase, "final_mase.csv")
+write.csv(final_smape, "final_smape.csv")
+
+
+```
